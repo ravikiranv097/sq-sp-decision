@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    td { border: 1px solid #000; padding: 6px; vertical-align: top; }
+    .label { font-weight: bold; width: 30%; background: #f2f2f2; }
+    .yes { color: green; font-weight: bold; }
+    .no { color: red; font-weight: bold; }
+    pre { font-size: 10px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+<table>
+  <tr><td class="label">Username</td><td>{{Username}}</td></tr>
+  <tr><td class="label">Account ID</td><td>{{AccountID}}</td></tr>
+  <tr><td class="label">Timestamp (IST)</td><td>{{Timestamp}}</td></tr>
+  <tr>
+    <td class="label">Has Access</td>
+    <td class="{{AccessClass}}">{{HasAccess}}</td>
+  </tr>
+  <tr><td class="label">Permission Level</td><td>{{Permission}}</td></tr>
+  <tr>
+    <td class="label">API Response</td>
+    <td><pre>{{ApiResponse}}</pre></td>
+  </tr>
+</table>
+</body>
+</html>

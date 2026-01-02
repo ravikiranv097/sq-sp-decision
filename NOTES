@@ -1,0 +1,1 @@
+curl -u "xxxxx:" http://localhost:9000/api/users/search?q=user1
