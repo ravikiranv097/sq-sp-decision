@@ -25,10 +25,22 @@ exports.generatePNG = async (evidence, outputDir) => {
 
   await page.setContent(html, { waitUntil: "networkidle0" });
 
+  // Ensure layout & fonts are fully settled
+  await page.evaluate(() => document.fonts.ready);
+
+  // Set a safe fixed viewport width (height doesn't matter now)
+  await page.setViewport({
+    width: 1200,
+    height: 800,
+    deviceScaleFactor: 1
+  });
+
   const fileName = `${evidence["Username"]}_${evidence["Project"]}_${Date.now()}.png`;
-  await page.screenshot({
-    path: `${outputDir}/${fileName}`,
-    fullPage: true
+
+  // Screenshot the rendered content itself (NO CUTTING)
+  const bodyHandle = await page.$("body");
+  await bodyHandle.screenshot({
+    path: `${outputDir}/${fileName}`
   });
 
   await browser.close();
