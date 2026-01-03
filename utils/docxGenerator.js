@@ -1,32 +1,29 @@
 const fs = require("fs");
 const path = require("path");
-const { imageSize } = require("image-size");
-const { Document, Packer, Paragraph, ImageRun } = require("docx");
+const officegen = require("officegen");
 
-async function generateDocxFromPngFolder(docxPath, pngFolder) {
-  const files = fs.readdirSync(pngFolder).filter(f => f.endsWith(".png"));
+function generateDocxFromPngFolder(docxPath, pngFolder) {
+  const images = fs
+    .readdirSync(pngFolder)
+    .filter(f => f.endsWith(".png"))
+    .sort();
 
-  const sections = files.map(file => {
-    const buffer = fs.readFileSync(path.join(pngFolder, file));
-    const { width, height } = imageSize(buffer);
+  if (!images.length) return;
 
-    return {
-      children: [
-        new Paragraph({
-          children: [
-            new ImageRun({
-              data: buffer,
-              transformation: { width, height }
-            })
-          ]
-        })
-      ]
-    };
+  const docx = officegen("docx");
+
+  images.forEach((img, index) => {
+    const p = docx.createP();
+    p.addImage(path.join(pngFolder, img));
+
+    // Page break between images
+    if (index < images.length - 1) {
+      docx.createP().addText("", { pageBreakBefore: true });
+    }
   });
 
-  const doc = new Document({ sections });
-  const buf = await Packer.toBuffer(doc);
-  fs.writeFileSync(docxPath, buf);
+  const out = fs.createWriteStream(docxPath);
+  docx.generate(out);
 }
 
 module.exports = { generateDocxFromPngFolder };
