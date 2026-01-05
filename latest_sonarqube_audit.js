@@ -1,166 +1,174 @@
-require("dotenv").config();
+'use strict';
 
-const XLSX = require("xlsx");
-const axios = require("axios");
+require("dotenv").config();
 const fs = require("fs-extra");
 const path = require("path");
+const axios = require("axios");
+const csv = require("csv-parser");
 const { createObjectCsvWriter } = require("csv-writer");
 
 const { generatePNG } = require("./utils/pngGenerator");
 const { generateDocxFromPngFolder } = require("./utils/docxGenerator");
 
-/* ===================== ENV & AUTH ===================== */
+/* ===================== CONFIG ===================== */
 
 const SONAR_URL = process.env.SONAR_URL.replace(/\/$/, "");
-const SONAR_TOKEN = process.env.SONAR_TOKEN;
-
 const HEADERS = {
-  Authorization: `Basic ${Buffer.from(`${SONAR_TOKEN}:`).toString("base64")}`
+  Authorization: `Basic ${Buffer.from(`${process.env.SONAR_TOKEN}:`).toString("base64")}`
 };
+
+/* ===================== INPUT FILE (AUTO-DETECT) ===================== */
+
+function getInputCsvFile() {
+  const dir = path.join(__dirname, "input_files");
+
+  if (!fs.existsSync(dir)) {
+    throw new Error("input_files directory does not exist");
+  }
+
+  const files = fs
+    .readdirSync(dir)
+    .filter(f => f.toLowerCase().endsWith(".csv") && !f.startsWith("~$"));
+
+  if (files.length !== 1) {
+    throw new Error(
+      `input_files must contain exactly one .csv file, found ${files.length}`
+    );
+  }
+
+  return path.join(dir, files[0]);
+}
 
 /* ===================== HELPERS ===================== */
 
-function getIndianTimestamp() {
+function getIST() {
   return new Date().toLocaleString("en-IN", {
     timeZone: "Asia/Kolkata",
     hour12: false
   });
 }
 
-function getInputExcelFile() {
-  const dir = path.join(__dirname, "input_files");
-  const files = fs.readdirSync(dir).filter(f => f.endsWith(".xlsx") && !f.startsWith("~$"));
-  if (files.length !== 1) {
-    throw new Error("input_files must contain exactly one .xlsx file");
-  }
-  return path.join(dir, files[0]);
+/* ===================== SONAR API ===================== */
+
+async function getUser(username) {
+  const res = await axios.get(
+    `${SONAR_URL}/api/users/search`,
+    { params: { q: username }, headers: HEADERS }
+  );
+  return res.data.users?.find(u => u.login === username) || null;
 }
 
-/* ===================== PERMISSION LEVEL ===================== */
-
-function resolvePermissionLevel(userInfo) {
-  if (!userInfo || !Array.isArray(userInfo.groups) || userInfo.groups.length === 0) {
-    return "-";
-  }
-
-  const mapped = userInfo.groups.map(group => {
-    if (group === "sonar-users") return "SONAR USERS";
-    if (group === "sonar-administrators") return "SONAR ADMINISTRATOR";
-    return group;
-  });
-
-  return [...new Set(mapped)].join(", ");
+async function deactivateUser(username) {
+  return axios.post(
+    `${SONAR_URL}/api/users/deactivate`,
+    null,
+    { params: { login: username }, headers: HEADERS }
+  );
 }
 
-/* ===================== CSV ===================== */
+/* ===================== CSV OUTPUT ===================== */
 
 const csvHeader = [
   { id: "Username", title: "Username" },
-  { id: "Account ID", title: "Account ID" },
   { id: "Timestamp (IST)", title: "Timestamp (IST)" },
-  { id: "Has Access", title: "Has Access" },
-  { id: "Permission Level", title: "Permission Level" }
+  { id: "Has Access", title: "Has Access" }
 ];
 
 const accessCsv = createObjectCsvWriter({
   path: "output_files/access_check_results.csv",
-  append: fs.existsSync("output_files/access_check_results.csv"),
   header: csvHeader
 });
 
 const noAccessCsv = createObjectCsvWriter({
   path: "output_files/no_access_check_results.csv",
-  append: fs.existsSync("output_files/no_access_check_results.csv"),
   header: csvHeader
 });
-
-/* ===================== SONAR API ===================== */
-
-async function getUserStatus(username) {
-  const res = await axios.get(
-    `${SONAR_URL}/api/users/search`,
-    { params: { q: username }, headers: HEADERS }
-  );
-
-  if (typeof res.data === "string") {
-    throw new Error("HTML response received instead of JSON");
-  }
-
-  return {
-    raw: res.data,
-    user: res.data.users?.find(u => u.login === username) || null
-  };
-}
 
 /* ===================== MAIN ===================== */
 
 (async () => {
   try {
+    /* 🔹 Resolve input CSV */
+    const inputCsv = getInputCsvFile();
+    console.log(`📄 Using input file: ${path.basename(inputCsv)}`);
+
+    /* 🔹 Runtime directory setup */
     await fs.ensureDir("output_files/png/has_access");
     await fs.ensureDir("output_files/png/no_access");
     await fs.ensureDir("output_files/doc");
     await fs.ensureDir("output_files/logs");
 
-    const inputFile = getInputExcelFile();
-    console.log(`📄 Using input file: ${path.basename(inputFile)}`);
+    const stream = fs.createReadStream(inputCsv).pipe(csv());
 
-    const workbook = XLSX.readFile(inputFile);
-    const rows = XLSX.utils
-      .sheet_to_json(workbook.Sheets[workbook.SheetNames[0]])
-      .filter(r => r.Decision === "Revoked");
+    for await (const row of stream) {
+      const username = String(row["Username"]).trim();
+      if (!username) continue;
 
-    for (const row of rows) {
-      const user = String(row["User SSO"]).trim();
+      let apiResponse = null;
+      let finalUser = null;
 
       try {
-        const { user: userInfo, raw } = await getUserStatus(user);
+        /* 1️⃣ Initial check */
+        const initialUser = await getUser(username);
 
-        let hasAccess = false;
-        let permissionLevel = "-";
-
-        if (userInfo && userInfo.active === true) {
-          hasAccess = true;
-          permissionLevel = resolvePermissionLevel(userInfo);
+        /* 2️⃣ Enforce policy if active */
+        if (initialUser && initialUser.active === true) {
+          apiResponse = (await deactivateUser(username)).data;
         }
 
-        const evidence = {
-          "Username": user,
-          "Account ID": user,
-          "Timestamp (IST)": getIndianTimestamp(),
-          "Has Access": hasAccess ? "YES" : "NO",
-          "Permission Level": permissionLevel,
-          "API Response": raw
-        };
-
-        await generatePNG(
-          evidence,
-          hasAccess
-            ? "output_files/png/has_access"
-            : "output_files/png/no_access"
-        );
-
-        const consoleMsg = hasAccess
-          ? `[USER] ${user} | HAS ACCESS | ${permissionLevel}`
-          : `[USER] ${user} | NO ACCESS`;
-
-        console.log(consoleMsg);
-
-        await fs.appendFile("output_files/logs/audit-info.log", consoleMsg + "\n");
-
-        if (hasAccess) {
-          await accessCsv.writeRecords([evidence]);
-        } else {
-          await noAccessCsv.writeRecords([evidence]);
-        }
+        /* 3️⃣ Final authoritative state */
+        finalUser = await getUser(username);
 
       } catch (err) {
-        await fs.appendFile(
-          "output_files/logs/audit-error.log",
-          `[ERROR] ${user} → ${err.message}\n`
-        );
+        apiResponse = err.response?.data || err.message;
       }
+
+      const hasAccessFinal =
+        finalUser && finalUser.active === true;
+
+      const evidence = {
+        "Username": username,
+        "Account ID": username,
+        "Timestamp (IST)": getIST(),
+        "Has Access": hasAccessFinal ? "YES" : "NO",
+        "Permission Level": "-",
+        "API Response": apiResponse || finalUser || "User not found"
+      };
+
+      /* 📸 FINAL STATE EVIDENCE */
+      await generatePNG(
+        evidence,
+        hasAccessFinal
+          ? "output_files/png/has_access"
+          : "output_files/png/no_access"
+      );
+
+      /* 🧾 CSV OUTPUT */
+      const record = [{
+        Username: username,
+        "Timestamp (IST)": evidence["Timestamp (IST)"],
+        "Has Access": evidence["Has Access"]
+      }];
+
+      if (hasAccessFinal) {
+        await accessCsv.writeRecords(record);
+      } else {
+        await noAccessCsv.writeRecords(record);
+      }
+
+      /* 🔹 FINAL LOG (CONSOLE + FILE) */
+      const finalLog =
+        `[FINAL] ${username} → ${hasAccessFinal ? "HAS ACCESS" : "NO ACCESS"}`;
+
+      console.log(finalLog);
+
+      await fs.appendFile(
+        "output_files/logs/audit-info.log",
+        finalLog + "\n"
+      );
     }
 
+    /* 📄 DOCX GENERATION */
     await generateDocxFromPngFolder(
       "output_files/doc/SonarQube_Has_Access_Evidence.docx",
       "output_files/png/has_access"
@@ -173,7 +181,8 @@ async function getUserStatus(username) {
 
     console.log("✅ SonarQube access evidence collection completed");
 
-  } catch (fatal) {
-    console.error("❌ Fatal error:", fatal.message);
+  } catch (err) {
+    console.error("❌ Fatal error:", err.message);
+    process.exit(1);
   }
 })();
